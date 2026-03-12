@@ -1,49 +1,46 @@
-// Listen on a specific host via the HOST environment variable
-var host = process.env.HOST || '0.0.0.0';
-// Listen on a specific port via the PORT environment variable
-var port = process.env.PORT || 8080;
+const express = require("express");
+const request = require("request");
+const app = express();
 
-// Grab the blacklist from the command-line so that we can update the blacklist without deploying
-// again. CORS Anywhere is open by design, and this blacklist is not used, except for countering
-// immediate abuse (e.g. denial of service). If you want to block all origins except for some,
-// use originWhitelist instead.
-var originBlacklist = parseEnvList(process.env.CORSANYWHERE_BLACKLIST);
-var originWhitelist = parseEnvList(process.env.CORSANYWHERE_WHITELIST);
-function parseEnvList(env) {
-  if (!env) {
-    return [];
-  }
-  return env.split(',');
-}
-
-// Set up rate-limiting to avoid abuse of the public CORS Anywhere server.
-var checkRateLimit = require('./lib/rate-limit')(process.env.CORSANYWHERE_RATELIMIT);
-
-var cors_proxy = require('./lib/cors-anywhere');
-cors_proxy.createServer({
-  originBlacklist: originBlacklist,
-  originWhitelist: originWhitelist,
-  requireHeader: ['origin', 'x-requested-with'],
-  checkRateLimit: checkRateLimit,
-  removeHeaders: [
-    'cookie',
-    'cookie2',
-    // Strip Heroku-specific headers
-    'x-request-start',
-    'x-request-id',
-    'via',
-    'connect-time',
-    'total-route-time',
-    // Other Heroku added debug headers
-    // 'x-forwarded-for',
-    // 'x-forwarded-proto',
-    // 'x-forwarded-port',
-  ],
-  redirectSameOrigin: true,
-  httpProxyOptions: {
-    // Do not add X-Forwarded-For, etc. headers, because Heroku already adds it.
-    xfwd: false,
-  },
-}).listen(port, host, function() {
-  console.log('Running CORS Anywhere on ' + host + ':' + port);
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  next();
 });
+
+app.get("/proxy", (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).send("No URL provided");
+
+  request(
+    {
+      url,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+      },
+    },
+    (err, response, body) => {
+      if (err) return res.status(500).send("Proxy error: " + err.message);
+
+      // Strip headers that block embedding
+      res.removeHeader("X-Frame-Options");
+      res.removeHeader("Content-Security-Policy");
+
+      // Forward content type
+      const ct = response.headers["content-type"] || "text/html";
+      res.setHeader("Content-Type", ct);
+
+      // Rewrite links so they go through the proxy too
+      if (ct.includes("text/html")) {
+        const base = new URL(url);
+        const origin = base.origin;
+        body = body
+          .replace(/(href|src|action)="\/(?!\/)/g, `$1="${origin}/`)
+          .replace(/(href|src|action)='\/(?!\/)/g, `$1='${origin}/`);
+      }
+
+      res.send(body);
+    }
+  );
+});
+
+app.listen(3000, () => console.log("SalivaSiva proxy running"));
